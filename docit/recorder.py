@@ -1,20 +1,27 @@
+import logging
 import os
+import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime
 
-import numpy as np
 import sounddevice as sd
 import soundfile as sf
 
 from docit.config import AUDIO_CHANNELS, AUDIO_SAMPLE_RATE
 
+log = logging.getLogger("docit")
+
+STREAM_BLOCK_SIZE = 1024
+
 
 class AudioRecorder:
     def __init__(self, save_dir):
         self.save_dir = save_dir
-        self._frames = []
         self._stream = None
+        self._writer = None
+        self._tmp_path = None
         self._recording = False
         self._start_time = None
         self._lock = threading.Lock()
@@ -25,16 +32,24 @@ class AudioRecorder:
 
     def _callback(self, indata, frames, time_info, status):
         with self._lock:
-            if self._recording:
-                self._frames.append(indata.copy())
+            if self._recording and self._writer:
+                self._writer.write(indata.copy())
 
     def start(self):
-        self._frames = []
+        self._tmp_path = tempfile.mktemp(suffix=".wav", dir=self.save_dir)
+        log.info("Recording to temp file: %s", self._tmp_path)
+        self._writer = sf.SoundFile(
+            self._tmp_path, mode="w",
+            samplerate=AUDIO_SAMPLE_RATE,
+            channels=AUDIO_CHANNELS,
+            format="WAV", subtype="PCM_16",
+        )
         self._recording = True
         self._start_time = time.time()
         self._stream = sd.InputStream(
             samplerate=AUDIO_SAMPLE_RATE,
             channels=AUDIO_CHANNELS,
+            blocksize=STREAM_BLOCK_SIZE,
             callback=self._callback,
         )
         self._stream.start()
@@ -49,16 +64,28 @@ class AudioRecorder:
             self._stream = None
 
         with self._lock:
-            if not self._frames:
-                return None, 0
-            audio_data = np.concatenate(self._frames, axis=0)
+            if self._writer:
+                self._writer.close()
+                self._writer = None
+
+        if not self._tmp_path or not os.path.exists(self._tmp_path):
+            return None, 0
 
         timestamp = datetime.now().strftime("%H%M%S")
-        filename = f"audio_{timestamp}.wav"
-        filepath = os.path.join(self.save_dir, filename)
+        mp3_filename = f"audio_{timestamp}.mp3"
+        mp3_path = os.path.join(self.save_dir, mp3_filename)
 
-        sf.write(filepath, audio_data, AUDIO_SAMPLE_RATE)
-
-        self._frames = []
+        log.info("Converting to mp3: %s", mp3_path)
+        self._convert_to_mp3(self._tmp_path, mp3_path)
+        os.remove(self._tmp_path)
+        self._tmp_path = None
         self._start_time = None
-        return filepath, duration
+
+        return mp3_path, duration
+
+    def _convert_to_mp3(self, wav_path, mp3_path):
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", wav_path, "-ac", "1", "-ar",
+             str(AUDIO_SAMPLE_RATE), "-b:a", "64k", mp3_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
