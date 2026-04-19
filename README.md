@@ -1,6 +1,6 @@
 # DocIt
 
-A macOS menu bar app for capturing screenshots and audio during meetings, saving everything as markdown notes you can open in Obsidian.
+A macOS menu bar app for capturing screenshots and audio (including transcriptions) during meetings, saving everything as markdown notes you can open in Obsidian.
 
 ## Features
 
