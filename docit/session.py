@@ -37,6 +37,9 @@ class Session:
             entry += f"> {transcript}\n\n"
         self._append(entry)
 
+    def append_live_answer(self, answer):
+        self._append(f"\n> [!done] Live Answer\n{answer}\n\n")
+
     def _append(self, text):
         with open(self.md_path, "a") as f:
             f.write(text)

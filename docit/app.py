@@ -1,13 +1,18 @@
+import atexit
 import logging
+import os
 import threading
 
 import rumps
 
 from docit.capture import take_screenshot
-from docit.config import OUTPUT_DIR
+from docit.config import OUTPUT_DIR, PERSONA_FILE, WATCHER_SCRIPT
+from docit.live import answer_transcript
+from docit.personas import DEFAULT_PERSONA, PERSONAS
 from docit.recorder import AudioRecorder
 from docit.session import Session
 from docit.transcriber import transcribe
+from docit.watcher import LiveWatcher
 
 log = logging.getLogger("docit")
 
@@ -17,6 +22,23 @@ class DocItApp(rumps.App):
         super().__init__("DocIt", title="DocIt")
         self.session = None
         self.recorder = None
+        self.watcher = LiveWatcher(WATCHER_SCRIPT, OUTPUT_DIR)
+        atexit.register(self.watcher.stop)
+
+        self.live_enabled_item = rumps.MenuItem("Enabled", callback=self.toggle_live_mode)
+        self.persona_items = {
+            name: rumps.MenuItem(name, callback=self.select_persona)
+            for name in PERSONAS
+        }
+        self.active_persona = DEFAULT_PERSONA
+        self.persona_items[DEFAULT_PERSONA].state = 1
+        self._write_persona(DEFAULT_PERSONA)
+
+        live_mode_menu = rumps.MenuItem("AI Assistance")
+        live_mode_menu.add(self.live_enabled_item)
+        live_mode_menu.add(None)
+        for name in PERSONAS:
+            live_mode_menu.add(self.persona_items[name])
 
         self.menu = [
             rumps.MenuItem("New Session", callback=self.new_session),
@@ -25,8 +47,39 @@ class DocItApp(rumps.App):
             rumps.MenuItem("Screenshot  (Shift+Ctrl+S)", callback=self.on_screenshot),
             rumps.MenuItem("Audio  (Shift+Ctrl+A)", callback=self.on_audio),
             None,
+            live_mode_menu,
+            None,
             rumps.MenuItem(f"Output: {OUTPUT_DIR}"),
         ]
+
+    def toggle_live_mode(self, _):
+        if self.watcher.is_running:
+            self.watcher.stop()
+            self.live_enabled_item.state = 0
+        else:
+            self.watcher.start()
+            if self.watcher.is_running:
+                self.live_enabled_item.state = 1
+            else:
+                rumps.alert(
+                    title="AI Assistance failed to start",
+                    message=f"Could not launch watcher.\nScript: {WATCHER_SCRIPT}\nSee /tmp/docit_watcher.log",
+                )
+
+    def select_persona(self, sender):
+        name = sender.title
+        if name not in PERSONAS:
+            return
+        self.persona_items[self.active_persona].state = 0
+        self.active_persona = name
+        self.persona_items[name].state = 1
+        self._write_persona(name)
+        log.info("Persona set: %s", name)
+
+    def _write_persona(self, name):
+        os.makedirs(os.path.dirname(PERSONA_FILE), exist_ok=True)
+        with open(PERSONA_FILE, "w") as f:
+            f.write(PERSONAS[name])
 
     def _ensure_session(self):
         if self.session is None:
@@ -117,5 +170,14 @@ class DocItApp(rumps.App):
         if transcript:
             log.info("Transcription complete (%d chars)", len(transcript))
         else:
-            log.info("No transcription (no API key or failed)")
+            log.info("No transcription produced (see warnings above)")
         session.add_audio(audio_path, duration, transcript)
+
+        if transcript and self.watcher.is_running:
+            log.info("Asking Claude for live answer to audio")
+            answer = answer_transcript(transcript)
+            if answer and "No actionable content" not in answer:
+                session.append_live_answer(answer)
+                log.info("Live answer appended (%d chars)", len(answer))
+            else:
+                log.info("No live answer produced")

@@ -1,9 +1,13 @@
+import logging
 import os
+
+log = logging.getLogger(__name__)
 
 
 def transcribe(audio_path):
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
+        log.warning("OPENAI_API_KEY is not set in this process's environment")
         return None
 
     try:
@@ -17,4 +21,5 @@ def transcribe(audio_path):
             )
         return result.text
     except Exception:
+        log.exception("Transcription request failed")
         return None

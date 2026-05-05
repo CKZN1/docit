@@ -36,23 +36,39 @@ class AudioRecorder:
                 self._writer.write(indata.copy())
 
     def start(self):
+        try:
+            device_rate = int(sd.query_devices(kind="input")["default_samplerate"])
+        except Exception:
+            device_rate = AUDIO_SAMPLE_RATE
+
         self._tmp_path = tempfile.mktemp(suffix=".wav", dir=self.save_dir)
-        log.info("Recording to temp file: %s", self._tmp_path)
+        log.info("Recording to temp file: %s (rate=%d)", self._tmp_path, device_rate)
         self._writer = sf.SoundFile(
             self._tmp_path, mode="w",
-            samplerate=AUDIO_SAMPLE_RATE,
+            samplerate=device_rate,
             channels=AUDIO_CHANNELS,
             format="WAV", subtype="PCM_16",
         )
+        try:
+            self._stream = sd.InputStream(
+                samplerate=device_rate,
+                channels=AUDIO_CHANNELS,
+                blocksize=STREAM_BLOCK_SIZE,
+                callback=self._callback,
+            )
+            self._stream.start()
+        except Exception:
+            self._writer.close()
+            self._writer = None
+            try:
+                os.remove(self._tmp_path)
+            except OSError:
+                pass
+            self._tmp_path = None
+            raise
+
         self._recording = True
         self._start_time = time.time()
-        self._stream = sd.InputStream(
-            samplerate=AUDIO_SAMPLE_RATE,
-            channels=AUDIO_CHANNELS,
-            blocksize=STREAM_BLOCK_SIZE,
-            callback=self._callback,
-        )
-        self._stream.start()
 
     def stop(self):
         self._recording = False
